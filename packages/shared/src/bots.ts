@@ -326,6 +326,8 @@ export interface BotOutboundMessage {
   botId: string;
   provider: BotProvider;
   providerUserId: string;
+  /** 改造版：群消息回复投递目标（飞书 chat_id）；缺省时按 providerUserId（open_id）投递。 */
+  chatId?: string;
   text: string;
   locale?: Locale;
   selection?: SelectionPrompt;

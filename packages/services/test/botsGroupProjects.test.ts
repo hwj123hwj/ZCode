@@ -177,3 +177,33 @@ test("writeTaskMd 新建 TASK.md；已有文件只替换当前任务小节", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("群消息的流式卡片 state 携带 chatId 且分段后保留（回复进群不落私聊）", async () => {
+  const { splitFeishuStreamingCardStates } = await import("../src/bots/providers/feishuProvider.js");
+  const state = {
+    providerUserId: "ou_user",
+    chatId: "oc_group",
+    locale: "zh-CN" as const,
+    blocks: [{ type: "message" as const, text: "群里问，群里答" }],
+    status: "running" as const,
+  };
+  const segments = splitFeishuStreamingCardStates(state);
+  assert.ok(segments.length >= 1);
+  for (const segment of segments) {
+    assert.equal(segment.chatId, "oc_group");
+    assert.equal(segment.providerUserId, "ou_user");
+  }
+});
+
+test("私聊的流式卡片 state 无 chatId，投递语义回落 open_id", async () => {
+  const { splitFeishuStreamingCardStates } = await import("../src/bots/providers/feishuProvider.js");
+  const segments = splitFeishuStreamingCardStates({
+    providerUserId: "ou_user",
+    locale: "zh-CN" as const,
+    blocks: [{ type: "message" as const, text: "私聊" }],
+    status: "running" as const,
+  });
+  for (const segment of segments) {
+    assert.equal(segment.chatId, undefined);
+  }
+});

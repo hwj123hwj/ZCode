@@ -475,7 +475,11 @@ function createOutbound(
   return {
     botId: actor.botId,
     provider: actor.provider,
+    // 兼容保留：非飞书渠道（无 chatId 字段消费能力）依赖 providerUserId 承载群投递目标。
     providerUserId: actor.chatId ?? actor.providerUserId,
+    // 改造版：显式携带 chatId，发送侧统一按 chatId ?? providerUserId 解析 receive_id；
+    // providerUserId 恢复「发送者 open_id」语义由后续渠道逐个切换。
+    ...(actor.chatId ? { chatId: actor.chatId } : {}),
     text,
     ...(selection ? { selection } : {}),
     ...extras,
@@ -3814,6 +3818,9 @@ export function createBotsService(
       const locale = await readMessageLocale();
       const state = {
         providerUserId: actor.providerUserId,
+        // Bugfix（改造版）：群消息的流式回复卡片必须投递到群（actor.chatId），
+        // 之前只带 providerUserId（open_id），导致群里提问、回复卡片却落在私聊。
+        ...(actor.chatId ? { chatId: actor.chatId } : {}),
         locale,
         blocks: buildStreamingCardBlocks(locale),
         status: streamingCardStatus,

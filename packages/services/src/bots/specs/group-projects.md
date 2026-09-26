@@ -39,7 +39,19 @@ ZCode bot 当前是「1 bot = 1 人 = 1 项目」模型：群聊消息被整体�
 - 校验沿用既有边界：route 的 workspace 必须在 `allowedWorkspaces` 授权内
   （`isWorkspaceAllowed`），越权按现状回 `workspaceOutOfScope`。
 
-### 2.3 拉群命令（/拉群）
+### 2.3 群消息回复投递（回复去群，不落私聊）
+
+- 群消息触发的**所有**回复（普通 outbound、流式回复卡片、临时交互卡片、typing 目标），
+  投递目标必须是该群的 `actor.chatId`（飞书 `oc_` 前缀 chat_id），不得回落到绑定用户私聊。
+- 实现：`BotStreamingReplyCardState`/`BotOutboundMessage` 携带可选 `chatId`；
+  `botsService` 构造流式卡片 state 时透传 `actor.chatId`；
+  `feishuProvider` 发送侧统一按 `chatId ?? providerUserId` 解析 receive_id
+  （`resolveFeishuReceiveIdType` 按 `oc_` 前缀自动切 `receive_id_type=chat_id`）。
+- 私聊消息 `chatId` 为空，行为与现状完全一致（发 open_id）。
+- `providerUserId` 语义保持「发送者 open_id」，不再被 chatId 覆写占用；
+  需要「回复目标」的地方一律读 `chatId ?? providerUserId`。
+
+### 2.4 拉群命令（/拉群）
 
 - 语法：`/拉群 <项目路径> [群名]` 或 `/newgroup <项目路径> [群名]`；带 `--task <说明>` 或
   `--任务 <说明>` 时写入 TASK.md。任务说明含空格时用引号包裹。
@@ -56,7 +68,7 @@ ZCode bot 当前是「1 bot = 1 人 = 1 项目」模型：群聊消息被整体�
 - 飞书 API 依赖：复用 `feishuProvider` 的 tenant_access_token 缓存与凭据加载，
   新增 `createGroupChat` 能力挂在 provider 适配器上（不另起第二个 HTTP 客户端）。
 
-### 2.4 帮助与文案
+### 2.5 帮助与文案
 
 - `/帮助` 增补拉群与群聊说明；新增文案走 `messages.ts` 中英双语。
 
@@ -92,10 +104,12 @@ ZCode bot 当前是「1 bot = 1 人 = 1 项目」模型：群聊消息被整体�
 4. 群里 `/项目` → 列出/切换的是该群绑定；私聊 `/项目` 不受影响。
 5. 建群时飞书 API 失败 → 用户收到错误说明，无残留 route。
 6. 旧 bot-state.v3.json（无 chatRoutes）升级后正常加载，行为不变。
+7. 群里发「你好」→ 流式回复卡片出现在**该群**；同一时刻私聊无新增回复。
 
 ## 6. 测试
 
 - `commandParser`：`/拉群`、`/newgroup`、`--task/--任务` 解析。
 - 路由解析：chatRoutes 命中/未命中回退、群 `/项目` 写 route 不动 bot 级。
 - 准入：群聊绑定用户放行、非绑定用户静默、`/bind` 群聊仍拒。
+- 投递：群消息的流式卡片/普通回复 receive_id = 群 chat_id；私聊仍为 open_id。
 - 兼容：无 chatRoutes 的旧 state 读取。

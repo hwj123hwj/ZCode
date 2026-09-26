@@ -1727,7 +1727,8 @@ export function createFeishuBotProvider(deps: FeishuProviderDeps): BotProviderAd
       if (!token) {
         return;
       }
-      const receiveId = message.providerUserId;
+      // 改造版：群消息回复投递到群（chatId 优先），私聊回落 open_id。
+      const receiveId = message.chatId ?? message.providerUserId;
       if (message.selection) {
         await sendCard(
           bot,
@@ -1763,7 +1764,8 @@ export function createFeishuBotProvider(deps: FeishuProviderDeps): BotProviderAd
       const providerMessageId = await sendCard(
         bot,
         token,
-        state.providerUserId,
+        // Bugfix（改造版）：群里提问时流式卡片必须发到群（chatId），而不是绑定用户私聊。
+        state.chatId ?? state.providerUserId,
         buildFeishuStreamingCardPayload(state),
         signal,
       );
@@ -1786,7 +1788,8 @@ export function createFeishuBotProvider(deps: FeishuProviderDeps): BotProviderAd
       const providerMessageId = await sendCard(
         bot,
         token,
-        message.providerUserId,
+        // 改造版：群任务的权限/交互卡片同样投递到群，chatId 优先。
+        message.chatId ?? message.providerUserId,
         message.elicitation
           ? buildFeishuElicitationCardPayload(message)
           : buildFeishuInteractiveCardPayload(message),

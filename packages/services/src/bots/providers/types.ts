@@ -33,6 +33,8 @@ export type BotStreamingReplyCardBlock =
 
 export interface BotStreamingReplyCardState {
   providerUserId: string;
+  /** 改造版：群消息回复投递目标（飞书 oc_ 前缀 chat_id）；私聊缺省，回 open_id。 */
+  chatId?: string;
   locale?: Locale;
   blocks: BotStreamingReplyCardBlock[];
   status: "running" | "sealed" | "completed" | "error";
