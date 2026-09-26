@@ -6,7 +6,12 @@
 ## 一、安装与启动
 
 1. 打开 `ZCode Preview`（未签名，首次打开需右键 → 打开）。
-2. 正式版 ZCode 可以保持关闭；两者数据目录独立，机器人配置需要在新应用里重新创建或导入。
+2. **数据目录与正式版共享**（`~/.zcode/v2`）：机器人配置自动沿用，无需重建。
+3. **请只用 Preview 运行机器人**：改造版会在 state 文件写入新字段 `chatRoutes`，
+   旧版正式版读到会校验失败（报错，不会损坏文件）。若之后想让正式版继续管理
+   bot，先退出 Preview，再从 state 里删掉顶层 `chatRoutes` 字段：
+   `node -e "const f=require('os').homedir()+'/.zcode/v2/bot-state.v3.json';const j=require(f);delete j.chatRoutes;require('fs').writeFileSync(f,JSON.stringify(j,null,2))"`
+4. 不要同时让正式版和 Preview 运行同一个飞书机器人（消息会被两个实例分走）。
 
 ## 二、飞书开放平台前置条件（一次性）
 
