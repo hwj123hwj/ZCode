@@ -188,6 +188,28 @@ export interface BotState {
   weixinGetUpdatesBuf?: string;
   weixinActivatedAt?: number;
   updatedAt: number;
+  /**
+   * 群聊路由视图标记（改造版）：仅存在于内存中的 context 视图，标记该 context 当前
+   * 代表哪个群聊。writeContext 依据它把写入路由到 chatRoutes 桶，持久化前必须剥离，
+   * 不落盘。私聊 context 恒为 undefined。
+   */
+  activeChatId?: string;
+}
+
+/**
+ * 群聊 ↔ 项目的持久路由桶（改造版）。每个群拥有独立的 workspace 与任务状态，
+ * 与 bot 级默认 context（私聊）互相隔离。
+ */
+export interface BotChatRouteState {
+  workspacePath: string;
+  workspaceIdentity?: string;
+  workspaceId?: string;
+  mode: BotContextMode;
+  activeTaskId: string | null;
+  draftOptions?: BotDraftOptions;
+  pendingPermissionOptions?: BotPendingPermissionOption[];
+  pendingElicitation?: BotPendingElicitation;
+  updatedAt: number;
 }
 
 export type BotContextState = BotState;
@@ -195,6 +217,8 @@ export type BotContextState = BotState;
 export interface BotsStateFile {
   version: 3;
   bots: Record<string, BotState>;
+  /** 改造版：botId -> chatId -> 群路由状态。可选字段，旧文件缺省为空。 */
+  chatRoutes?: Record<string, Record<string, BotChatRouteState>>;
 }
 
 export interface BotRuntimeInfo {
@@ -255,6 +279,7 @@ export type BotCommand =
   | { type: "reply.list" }
   | { type: "reply.set"; value: string }
   | { type: "stop" }
+  | { type: "group.new"; path: string; groupName?: string; task?: string }
   | { type: "permission.respond"; value: string }
   | { type: "elicitation.respond"; value: string }
   | { type: "elicitation.submit" }
@@ -485,6 +510,31 @@ export const botsConfigFileSchema = z
   })
   .strict();
 
+export const botChatRouteStateSchema = z
+  .object({
+    workspacePath: z.string().min(1),
+    workspaceIdentity: z.string().min(1).optional(),
+    workspaceId: z.string().min(1).optional(),
+    mode: z.enum(["draft", "task"]),
+    activeTaskId: z.string().min(1).nullable(),
+    draftOptions: botDraftOptionsSchema.optional(),
+    pendingPermissionOptions: z
+      .array(
+        z.object({
+          requestId: z.string().min(1),
+          optionId: z.string().min(1),
+          command: z.enum(["approve", "deny"]),
+          label: z.string().min(1),
+          response: zcodePermissionResponseSchema,
+          handledAt: z.number().optional(),
+        }),
+      )
+      .optional(),
+    pendingElicitation: botPendingElicitationSchema.optional(),
+    updatedAt: z.number(),
+  })
+  .strict();
+
 export const botsStateFileSchema = z
   .object({
     version: z.literal(3),
@@ -514,9 +564,12 @@ export const botsStateFileSchema = z
         telegramOffset: z.number().optional(),
         weixinGetUpdatesBuf: z.string().optional(),
         weixinActivatedAt: z.number().optional(),
+        // 路由视图标记只在内存中流转，持久化前会被剥离；schema 里声明为可选仅为兼容。
+        activeChatId: z.string().min(1).optional(),
         updatedAt: z.number(),
       }),
     ),
+    chatRoutes: z.record(z.string(), z.record(z.string(), botChatRouteStateSchema)).optional(),
   })
   .strict();
 

@@ -48,10 +48,25 @@ export interface BotProviderAcknowledgeResult {
   handled?: boolean;
 }
 
+/** 改造版：拉群建项目所需的建群参数（飞书/Lark 实现）。 */
+export interface BotProviderCreateGroupChatParams {
+  name: string;
+  description?: string;
+  /** 邀请进群的成员（飞书为 open_id）。bot 自己会作为创建者自动入群。 */
+  memberOpenIds?: string[];
+  /** 幂等键：同 uuid 重复请求不会建出两个群。 */
+  uuid?: string;
+}
+
 export interface BotProviderAdapter {
   test(bot: BotConfig): Promise<{ ok: boolean; message: string }>;
   resolveName?(bot: BotConfig): Promise<string | null>;
   syncCommands?(bot: BotConfig): Promise<void>;
+  /** 改造版：创建群聊并返回 chat_id；不支持的渠道不实现（调用方给出明确提示）。 */
+  createGroupChat?(
+    bot: BotConfig,
+    params: BotProviderCreateGroupChatParams,
+  ): Promise<{ chatId: string }>;
   send(bot: BotConfig, message: BotOutboundMessage): Promise<void>;
   sendTyping?(bot: BotConfig, target: BotTypingTarget): Promise<void>;
   startTyping?(bot: BotConfig, target: BotTypingTarget): Promise<void>;
@@ -75,9 +90,7 @@ export interface BotProviderAdapter {
     state: BotStreamingReplyCardState,
     signal?: AbortSignal,
   ): Promise<void>;
-  splitStreamingReplyCardStates?(
-    state: BotStreamingReplyCardState,
-  ): BotStreamingReplyCardState[];
+  splitStreamingReplyCardStates?(state: BotStreamingReplyCardState): BotStreamingReplyCardState[];
   createTransientInteractionCard?(
     bot: BotConfig,
     message: BotOutboundMessage,
@@ -92,7 +105,10 @@ export interface BotProviderAdapter {
     handle: BotTransientInteractionCardHandle,
   ): Promise<void>;
   prepareCallbackPayload?(bot: BotConfig, payload: unknown): Promise<unknown>;
-  handleCallbackResponse?(bot: BotConfig, payload: unknown): Promise<Pick<BotProviderCallbackResult, "responseBody" | "status"> | null>;
+  handleCallbackResponse?(
+    bot: BotConfig,
+    payload: unknown,
+  ): Promise<Pick<BotProviderCallbackResult, "responseBody" | "status"> | null>;
   downloadAttachment?(
     bot: BotConfig,
     attachment: BotInboundAttachment,

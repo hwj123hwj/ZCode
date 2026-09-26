@@ -9,7 +9,6 @@ const DEFAULT_BOT_MESSAGE_LOCALE: BotMessageLocale = "zh-CN";
 const messages = {
   "zh-CN": {
     botDisabled: "当前 bot 未启用。",
-    privateChatOnly: "Bots 暂不支持群聊，请在私聊中使用。",
     bindPrivateOnly: "Bots 只允许在私聊中绑定。",
     userNotBound: "当前 bot 未绑定。请先在 zcode UI 生成绑定码，然后发送 **/bind <code>**。",
     commandNotAllowed: "当前 bot 未启用这个命令。",
@@ -121,10 +120,19 @@ const messages = {
     replySelectTitle: "当前第三方回复颗粒度 {mode}\n选择第三方回复颗粒度",
     replyMissing: "未找到回复颗粒度。",
     replyChanged: "第三方回复颗粒度已切换为 {mode}。",
+    helpGroup: "**/拉群 <项目路径> [群名] [--任务 <说明>]** — 拉群建项目并绑定",
+    groupNewUsage:
+      "用法：**/拉群 <项目路径> [群名] [--任务 <说明>]**。项目路径需为绝对路径或以 ~ 开头。",
+    groupNewProviderUnsupported: "当前渠道暂不支持拉群，请使用飞书/Lark 机器人。",
+    groupNewFailed: "拉群失败：{message}",
+    groupNewTaskWritten: "任务说明已写入 {taskFile}。",
+    groupNewCreated:
+      "✅ 已创建群「{group}」并绑定项目：{path}\n{taskLine}在群里 @机器人 直接派活即可，这个群的工作区、任务都是独立的。",
+    groupNoRouteHint:
+      "当前群还没有绑定项目，本次按默认工作区 {workspace} 处理。发送 **/项目** 绑定本群，或在私聊用 **/拉群** 新建项目群。",
   },
   "en-US": {
     botDisabled: "This bot is not enabled.",
-    privateChatOnly: "Bots do not support group chats yet. Please use a private chat.",
     bindPrivateOnly: "Bots can only bind in a private chat.",
     userNotBound:
       "This bot is not bound. Generate a bind code in the zcode UI, then send **/bind <code>**.",
@@ -245,6 +253,18 @@ const messages = {
     replySelectTitle: "Current third-party reply detail {mode}\nSelect third-party reply detail",
     replyMissing: "Reply detail option not found.",
     replyChanged: "Third-party reply detail changed to {mode}.",
+    helpGroup:
+      "**/newgroup <project path> [group name] [--task <desc>]** — create a project group and bind it",
+    groupNewUsage:
+      "Usage: **/newgroup <project path> [group name] [--task <desc>]**. The project path must be absolute or start with ~.",
+    groupNewProviderUnsupported:
+      "Group creation is not supported on this channel. Use a Feishu/Lark bot.",
+    groupNewFailed: "Failed to create the group: {message}",
+    groupNewTaskWritten: "Task description written to {taskFile}.",
+    groupNewCreated:
+      '✅ Group "{group}" created and bound to project: {path}\n{taskLine}Mention the bot in the group to assign work. This group has its own workspace and tasks.',
+    groupNoRouteHint:
+      "This group is not bound to a project yet; handling this message with the default workspace {workspace}. Send **/workspace** to bind this group, or use **/newgroup** in a private chat to create a project group.",
   },
 } as const;
 

@@ -76,7 +76,9 @@ export function parseBotCommand(text: string): BotCommand {
     case "停止":
       return { type: "stop" };
     case "permission":
-      return rest ? { type: "permission.respond", value: rest } : { type: "unknown", name, raw: text };
+      return rest
+        ? { type: "permission.respond", value: rest }
+        : { type: "unknown", name, raw: text };
     case "elicitation":
     case "answer":
     case "回答":
@@ -95,7 +97,73 @@ export function parseBotCommand(text: string): BotCommand {
     }
     case "deny":
       return rest ? { type: "deny", requestId: rest } : { type: "unknown", name, raw: text };
+    case "拉群":
+    case "newgroup": {
+      const parsed = parseGroupNewArgs(rest);
+      return parsed ?? { type: "unknown", name, raw: text };
+    }
     default:
       return { type: "unknown", name, raw: text };
   }
+}
+
+/**
+ * 改造版：解析 /拉群 的参数。
+ * 语法：`<项目路径> [群名...] [--任务 <说明> | --task <说明>]`。
+ * 路径与群名支持成对双引号/单引号；--任务 X 与 --任务=X 两种写法都接受；
+ * 缺路径视为用法错误（返回 null）。
+ */
+export function parseGroupNewArgs(rest: string): {
+  type: "group.new";
+  path: string;
+  groupName?: string;
+  task?: string;
+} | null {
+  const tokens = tokenizeCommandArgs(rest);
+  let task: string | undefined;
+  const positional: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const taskFlag = token === "--任务" || token === "--task";
+    const taskInline =
+      token.startsWith("--任务=") || token.startsWith("--task=")
+        ? token.slice(token.indexOf("=") + 1)
+        : undefined;
+    if (taskFlag) {
+      const value = tokens[index + 1];
+      if (!value) {
+        return null;
+      }
+      task = value;
+      index += 1;
+      continue;
+    }
+    if (taskInline !== undefined) {
+      task = taskInline;
+      continue;
+    }
+    positional.push(token);
+  }
+  const [path, ...groupNameTokens] = positional;
+  if (!path) {
+    return null;
+  }
+  const groupName = groupNameTokens.join(" ").trim();
+  return {
+    type: "group.new",
+    path,
+    ...(groupName ? { groupName } : {}),
+    ...(task ? { task } : {}),
+  };
+}
+
+/** 按空格切分参数，成对的单/双引号内允许空格，引号本身不保留。 */
+function tokenizeCommandArgs(rest: string): string[] {
+  const tokens: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/gu;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(rest)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[3] ?? "");
+  }
+  return tokens;
 }

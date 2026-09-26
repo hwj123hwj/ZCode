@@ -1,8 +1,9 @@
 /* eslint-disable max-lines -- Bots 服务仍复用原 RPC 文件名，先把鉴权、命令路由、ZCode Agent 桥接收口集中在同一服务内。 */
 import { Buffer } from "node:buffer";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { IDisposable } from "@zcode/rpc";
 import { completeNewModelSelection } from "@zcode/provider";
 import {
@@ -142,6 +143,15 @@ import {
   resolveWorkspaceByValue,
 } from "./workspaceHelpers.js";
 import { getNativeModelProviderId } from "./modelSelectionHelpers.js";
+import {
+  applyChatRouteToContext,
+  deleteBotChatRoutes,
+  readChatRoute,
+  resolveProjectPath,
+  routeFieldsFromContext,
+  writeChatRoute,
+  writeTaskMd,
+} from "./groupProjectHelpers.js";
 import {
   formatStatusStreamToolProgress,
   formatStatusTaskLine,
@@ -875,10 +885,34 @@ export function createBotsService(
     await repo.writeState(state);
   }
 
-  async function readContext(_actor: BotActor, bot: BotConfig): Promise<BotContextState | null> {
+  async function readContext(actor: BotActor, bot: BotConfig): Promise<BotContextState | null> {
     await ensureBotStorageMigrated();
     const state = await repo.readState();
     const existing = state.bots[getContextKey(bot)];
+    const base = await resolveBaseContext(state, existing, bot);
+    if (!base) {
+      return null;
+    }
+    // 改造版：群聊 actor 走每群路由桶。命中路由 → 用路由字段生成该群视图；
+    // 未命中 → 回退 bot 级视图，但仍带上 activeChatId，让该群的后续写入（/项目、/新建、
+    // 任务状态）落到自己的路由桶，实现群间与私聊的隔离。
+    const groupChatId = actor.chatType === "group" ? actor.chatId?.trim() : undefined;
+    if (!groupChatId) {
+      return base;
+    }
+    const route = readChatRoute(state, bot.id, groupChatId);
+    if (!route) {
+      return { ...base, activeChatId: groupChatId };
+    }
+    return applyChatRouteToContext({ ...base, activeChatId: undefined }, route, groupChatId);
+  }
+
+  /** bot 级基础 context：已有桶做 canonical 自愈，无桶则用首个授权工作区合成（不落盘）。 */
+  async function resolveBaseContext(
+    state: Awaited<ReturnType<typeof repo.readState>>,
+    existing: BotContextState | undefined,
+    bot: BotConfig,
+  ): Promise<BotContextState | null> {
     if (existing) {
       const latestWorkspaces = await listWorkspaceRefs();
       const canonicalWorkspace = resolveCanonicalContextWorkspace(existing, latestWorkspaces);
@@ -930,7 +964,16 @@ export function createBotsService(
 
   async function writeContext(context: BotContextState): Promise<void> {
     const state = await repo.readState();
-    state.bots[context.botId] = { ...context, updatedAt: Date.now() };
+    if (context.activeChatId) {
+      // 改造版：群聊 context 视图的写入进该群自己的路由桶，不污染 bot 级默认上下文。
+      // activeChatId 只是内存标记，不进持久化字段。
+      writeChatRoute(state, context.botId, context.activeChatId, routeFieldsFromContext(context));
+      await repo.writeState(state);
+      return;
+    }
+    // activeChatId 不允许落盘：一旦缺失标记，兜底剥离，保证 bot 级桶永远是 bot 级视图。
+    const { activeChatId: _dropped, ...persisted } = context;
+    state.bots[context.botId] = { ...persisted, updatedAt: Date.now() };
     await repo.writeState(state);
   }
 
@@ -4451,21 +4494,25 @@ export function createBotsService(
   > {
     const locale = await readMessageLocale();
     const config = await repo.readConfig();
+    const isGroupChat = message.actor.chatType === "group";
     const bot = findAuthorizedBot(config, message.actor);
     if (!bot || bot.id !== message.botId) {
+      // 改造版：群消息里非授权/未启用场景一律静默，避免机器人在群里对陌生成员刷错误提示。
+      if (isGroupChat) {
+        return { ok: false, reply: [] };
+      }
       return {
         ok: false,
         reply: [createOutbound(message.actor, msg(locale, "botDisabled"))],
       };
     }
-    if (message.actor.chatType !== "private") {
-      return {
-        ok: false,
-        reply: [createOutbound(message.actor, msg(locale, "privateChatOnly"))],
-      };
-    }
+    // 改造版：放开群聊准入。绑定用户在群里与私聊同权（findAuthorizedBot 对非微信渠道
+    // 本来就要求发送者 open_id 与绑定用户一致）；其余群成员全部静默忽略。
     const user = findBoundUser(bot, message.actor);
     if (!user) {
+      if (isGroupChat) {
+        return { ok: false, reply: [] };
+      }
       return {
         ok: false,
         reply: [createOutbound(message.actor, msg(locale, "userNotBound"))],
@@ -4562,6 +4609,129 @@ export function createBotsService(
       createOutbound(
         message.actor,
         [msg(locale, "bindSuccess"), buildHelpText(locale, nextBot)].join("\n\n"),
+      ),
+    ];
+  }
+
+  /**
+   * 改造版：/拉群 —— 新建飞书群聊并绑定到本地项目目录。
+   * 事件顺序（见 specs/group-projects.md §4）：
+   *   1) 解析并落定项目目录（mkdir）
+   *   2) 调 provider 建群（uuid 幂等键）
+   *   3) 写入该群的路由桶（workspace + 全新 draft 状态）
+   *   4) 写 TASK.md（best-effort，失败不回滚）
+   *   5) 向新群发欢迎卡片
+   * 建群失败则不写路由、不写 TASK.md，直接回错误（避免留下半绑定状态）。
+   */
+  async function handleGroupNew(
+    message: BotInboundMessage,
+    command: Extract<BotCommand, { type: "group.new" }>,
+  ): Promise<BotOutboundMessage[]> {
+    const auth = await withAuthorizedContext(message, "workspace");
+    if (!auth.ok) {
+      return auth.reply;
+    }
+    const locale = auth.locale;
+    const providerAdapter = providers[auth.bot.provider];
+    if (!providerAdapter?.createGroupChat) {
+      return [createOutbound(message.actor, msg(locale, "groupNewProviderUnsupported"))];
+    }
+    const projectPath = resolveProjectPath(command.path, auth.context.workspacePath, homedir());
+    if (!isWorkspaceAllowed(projectPath, auth.user.allowedWorkspaces)) {
+      return [createOutbound(message.actor, msg(locale, "workspaceOutOfScope"))];
+    }
+    try {
+      await mkdir(projectPath, { recursive: true });
+    } catch (error) {
+      return [
+        createOutbound(
+          message.actor,
+          msg(locale, "groupNewFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      ];
+    }
+    const workspaceRef = createWorkspaceRef(projectPath);
+    const groupName = command.groupName?.trim() || basename(projectPath);
+    let chatId: string;
+    try {
+      const created = await providerAdapter.createGroupChat(auth.bot, {
+        name: groupName,
+        memberOpenIds: auth.bot.providerUserId ? [auth.bot.providerUserId] : [],
+        uuid: randomUUID(),
+      });
+      chatId = created.chatId;
+    } catch (error) {
+      botsLogger.warn(
+        undefined,
+        `group.new create failed provider=${auth.bot.provider} bot=${auth.bot.id}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [
+        createOutbound(
+          message.actor,
+          msg(locale, "groupNewFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      ];
+    }
+    // 新群路由桶：全新 draft 状态 + 指定项目目录。buildInitializedDraftOptions 内部
+    // 走 writeContext，会因 activeChatId 直接写入该群路由桶，一次完成持久化。
+    const groupContext: BotContextState = {
+      ...auth.context,
+      workspacePath: workspaceRef.workspacePath,
+      workspaceIdentity: workspaceRef.workspaceIdentity,
+      workspaceId: workspaceRef.id,
+      mode: "draft",
+      activeTaskId: null,
+      draftOptions: undefined,
+      pendingPermissionOptions: undefined,
+      pendingElicitation: undefined,
+      activeChatId: chatId,
+    };
+    try {
+      groupContext.draftOptions = await buildInitializedDraftOptions(groupContext);
+      await writeContext(groupContext);
+    } catch (error) {
+      // 建群已成功但路由持久化失败：不假装绑定成功，引导用户手动 /项目。
+      botsLogger.warn(
+        undefined,
+        `group.new route persist failed bot=${auth.bot.id} chat=${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [
+        createOutbound(
+          message.actor,
+          msg(locale, "groupNewFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        ),
+      ];
+    }
+    let taskLine = "";
+    try {
+      const taskFile = await writeTaskMd(projectPath, command.task);
+      taskLine = `${msg(locale, "groupNewTaskWritten", { taskFile })}\n`;
+    } catch (error) {
+      botsLogger.warn(
+        undefined,
+        `group.new TASK.md write failed path=${projectPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    // 欢迎卡片发到新群：群出站按 actor.chatId（oc_ 前缀）自动走 chat_id 投递。
+    return [
+      createOutbound(
+        {
+          ...message.actor,
+          chatType: "group",
+          chatId,
+          providerMessageId: undefined,
+        },
+        msg(locale, "groupNewCreated", {
+          group: groupName,
+          path: projectPath,
+          taskLine,
+        }),
       ),
     ];
   }
@@ -4733,7 +4903,7 @@ export function createBotsService(
 
   function buildHelpText(
     locale: Locale | undefined,
-    bot: Pick<BotConfig, "allowedCommands">,
+    bot: Pick<BotConfig, "allowedCommands" | "provider">,
   ): string {
     const lines = [msg(locale, "helpTitle")];
     for (const command of BOT_MENU_COMMAND_ORDER) {
@@ -4745,6 +4915,10 @@ export function createBotsService(
         continue;
       }
       lines.push(msg(locale, helpMessageByCommand[command]));
+    }
+    // 改造版：拉群是飞书/Lark 专属能力，帮助里只在对应渠道展示。
+    if (isFeishuBotProvider(bot.provider)) {
+      lines.push(msg(locale, "helpGroup"));
     }
     return lines.join("\n");
   }
@@ -5398,6 +5572,8 @@ export function createBotsService(
     async resetBotState(contextKey: string) {
       const state = await repo.readState();
       delete state.bots[contextKey];
+      // 改造版：重置 bot 时同步清空它的群路由，避免残留指向已删除上下文的绑定。
+      deleteBotChatRoutes(state, contextKey);
       await repo.writeState(state);
     },
     watchAutomationRun,
@@ -5425,6 +5601,8 @@ export function createBotsService(
             return handleSelectionCancel(message);
           case "bind":
             return handleBind(message, command.code);
+          case "group.new":
+            return handleGroupNew(message, command);
           case "help":
             return handleHelp(message);
           case "status":
